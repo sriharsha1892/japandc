@@ -1,0 +1,1179 @@
+# Japan Data Center CAPEX Market Research System
+# LangChain-based Implementation Architecture
+
+from typing import Dict, List, Any, Optional, Tuple
+from enum import Enum
+from dataclasses import dataclass
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain.chains import LLMChain, SequentialChain
+from langchain.memory import ConversationSummaryBufferMemory
+from langchain.tools import Tool, StructuredTool
+from langchain.callbacks import CallbackManager
+from langchain.schema import BaseOutputParser, BaseMemory
+from pydantic import BaseModel, Field
+
+# ============================================================================
+# PHASE 1: CORE DATA MODELS AND ENUMS
+# ============================================================================
+
+class ResearchPhase(Enum):
+    """Defines the four distinct phases of market research"""
+    DISCOVERY = "discovery"          # Source identification and assessment
+    EXTRACTION = "extraction"         # Data extraction and normalization
+    MODELING = "modeling"            # Calculations and projections
+    SYNTHESIS = "synthesis"          # Report generation and validation
+
+class DataSourceType(Enum):
+    """Categorizes data sources by reliability and type"""
+    GOVERNMENT_STATISTICS = "government"      # METI, MIC, prefectural data
+    INDUSTRY_ASSOCIATIONS = "associations"    # JDCC, industry groups
+    CORPORATE_DISCLOSURES = "corporate"       # Company reports, announcements
+    TRADE_DATA = "trade"                      # Import/export statistics
+    PROXY_INDICATORS = "proxy"                # Power consumption, permits
+    NEWS_REPORTS = "news"                     # Media coverage
+
+class MethodologyType(Enum):
+    """Available research methodologies"""
+    TOP_DOWN_CASCADE = "top_down"
+    BOTTOM_UP_AGGREGATION = "bottom_up"
+    PROXY_TRIANGULATION = "proxy"
+    HYBRID_WEIGHTED = "hybrid"
+
+@dataclass
+class DataPoint:
+    """Represents a single data point with metadata"""
+    value: float
+    source: str
+    source_type: DataSourceType
+    confidence_score: float  # 0.0 to 1.0
+    extraction_date: str
+    currency: str = "JPY"
+    unit: str = "billion"
+    methodology: Optional[MethodologyType] = None
+    validation_status: str = "pending"
+
+@dataclass
+class MarketSegment:
+    """Defines a specific market segment for analysis"""
+    dc_type: str  # colocation, hyperscale, others
+    construction_type: str  # IT, electrical, mechanical, general, services
+    tier: str  # Tier 1-2, Tier 3-4
+    end_user: str  # BFSI, IT/Telecom, Government, Healthcare, Others
+    
+# ============================================================================
+# PHASE 2: LANGCHAIN AGENT DEFINITIONS
+# ============================================================================
+
+class SourceHunterAgent:
+    """
+    Discovers and assesses data availability across Japanese sources
+    Specializes in multi-language search and source credibility scoring
+    """
+    
+    def __init__(self, llm, embeddings, vector_store):
+        self.llm = llm
+        self.embeddings = embeddings
+        self.vector_store = vector_store
+        
+        # Define specialized tools for source discovery
+        self.tools = [
+            StructuredTool.from_function(
+                func=self.search_government_databases,
+                name="search_gov_databases",
+                description="Search METI, MIC, and prefectural databases"
+            ),
+            StructuredTool.from_function(
+                func=self.search_industry_associations,
+                name="search_associations",
+                description="Query JDCC and industry association reports"
+            ),
+            StructuredTool.from_function(
+                func=self.evaluate_source_credibility,
+                name="evaluate_credibility",
+                description="Score source reliability and relevance"
+            ),
+            StructuredTool.from_function(
+                func=self.identify_proxy_indicators,
+                name="find_proxies",
+                description="Discover alternative data sources"
+            )
+        ]
+        
+        # Agent prompt specifically tuned for Japanese market research
+        self.prompt = """You are a specialized research agent for Japanese data center markets.
+        Your primary objectives:
+        1. Discover primary sources in Japanese and English
+        2. Assess data availability and quality
+        3. Map source coverage to required market segments
+        4. Identify data gaps requiring proxy indicators
+        
+        Key Japanese sources to prioritize:
+        - METI (経済産業省) economic statistics
+        - MIC (総務省) IT infrastructure reports  
+        - JDCC facility standards and market reports
+        - Prefecture-level construction permits
+        
+        When evaluating sources, score them on:
+        - Authority (government > industry > consultant)
+        - Recency (prefer data from last 12 months)
+        - Specificity (direct market data > adjacent markets)
+        - Language (primary Japanese sources > translations)
+        
+        Current task: {input}
+        Available tools: {tools}
+        Tool names: {tool_names}
+        
+        {agent_scratchpad}
+        """
+        
+    def search_government_databases(self, query: str) -> Dict[str, Any]:
+        """Searches Japanese government databases for relevant statistics"""
+        # Implementation would connect to METI, MIC APIs or web scraping
+        sources = {
+            "meti_digital_investment": {
+                "url": "https://www.meti.go.jp/statistics/",
+                "relevance": 0.95,
+                "data_points": ["IT services market size", "Digital infrastructure investment"],
+                "coverage_years": [2019, 2020, 2021, 2022, 2023, 2024],
+                "language": "ja"
+            },
+            "mic_telecom_statistics": {
+                "url": "https://www.soumu.go.jp/johotsusintokei/",
+                "relevance": 0.85,
+                "data_points": ["Data traffic growth", "Cloud adoption rates"],
+                "coverage_years": [2019, 2020, 2021, 2022, 2023],
+                "language": "ja"
+            }
+        }
+        return sources
+    
+    def search_industry_associations(self, segment: str) -> Dict[str, Any]:
+        """Queries industry association databases"""
+        # Would implement actual API calls or web scraping
+        return {
+            "jdcc_facility_standards": {
+                "tier_definitions": "Available",
+                "member_facilities": 127,
+                "construction_guidelines": "Published 2023"
+            }
+        }
+    
+    def evaluate_source_credibility(self, source: Dict) -> float:
+        """Scores source credibility from 0.0 to 1.0"""
+        weights = {
+            "government": 1.0,
+            "association": 0.85,
+            "corporate": 0.75,
+            "consultant": 0.65,
+            "news": 0.5
+        }
+        base_score = weights.get(source.get("type", "news"), 0.5)
+        
+        # Adjust for recency (decay function)
+        recency_factor = 1.0  # Would calculate based on publication date
+        
+        # Adjust for specificity
+        specificity_factor = 1.0 if "data_center" in source.get("keywords", "") else 0.8
+        
+        return base_score * recency_factor * specificity_factor
+    
+    def identify_proxy_indicators(self, missing_segments: List[str]) -> Dict[str, str]:
+        """Identifies alternative data sources for gaps"""
+        proxy_mapping = {
+            "hyperscale_capex": "power_consumption_growth",
+            "tier_distribution": "cooling_equipment_imports",
+            "services_spending": "engineering_firm_revenues",
+            "edge_deployment": "5g_tower_construction"
+        }
+        return {segment: proxy_mapping.get(segment, "manual_estimation") 
+                for segment in missing_segments}
+
+class DataExtractorAgent:
+    """
+    Extracts and normalizes quantitative data from identified sources
+    Handles Japanese language processing and unit conversions
+    """
+    
+    def __init__(self, llm, ocr_engine=None):
+        self.llm = llm
+        self.ocr_engine = ocr_engine
+        
+        self.tools = [
+            StructuredTool.from_function(
+                func=self.extract_tables,
+                name="extract_tables",
+                description="Extract tabular data from PDFs and web pages"
+            ),
+            StructuredTool.from_function(
+                func=self.normalize_currency,
+                name="normalize_currency",
+                description="Convert all values to JPY billions"
+            ),
+            StructuredTool.from_function(
+                func=self.parse_japanese_numbers,
+                name="parse_jp_numbers",
+                description="Handle Japanese number formats (万, 億, 兆)"
+            ),
+            StructuredTool.from_function(
+                func=self.validate_extraction,
+                name="validate_extraction",
+                description="Cross-check extracted values for errors"
+            )
+        ]
+        
+        self.prompt = """You are a data extraction specialist for Japanese market research.
+        
+        Your extraction priorities:
+        1. Preserve exact numerical values with units
+        2. Maintain source attribution for every data point
+        3. Flag ambiguous or conflicting data for review
+        4. Handle Japanese numerical notation (万=10,000, 億=100M, 兆=1T)
+        
+        Extraction rules:
+        - Always extract the time period/year for each data point
+        - Convert percentages to decimals (15% -> 0.15)
+        - Standardize currency to JPY using period-appropriate exchange rates
+        - Document confidence level for each extraction
+        
+        Current source: {source}
+        Target segments: {segments}
+        
+        {agent_scratchpad}
+        """
+    
+    def extract_tables(self, source_url: str, target_data: List[str]) -> List[DataPoint]:
+        """Extracts structured data from tables in documents"""
+        extracted_points = []
+        
+        # Simulation of extraction logic
+        if "construction_investment" in target_data:
+            extracted_points.append(
+                DataPoint(
+                    value=3660,
+                    source=source_url,
+                    source_type=DataSourceType.GOVERNMENT_STATISTICS,
+                    confidence_score=0.92,
+                    extraction_date="2024-08-21",
+                    methodology=MethodologyType.TOP_DOWN_CASCADE
+                )
+            )
+        
+        return extracted_points
+    
+    def normalize_currency(self, value: float, from_currency: str, 
+                          to_currency: str = "JPY", date: str = "2024-01-01") -> float:
+        """Converts currencies using historical exchange rates"""
+        # Would implement actual exchange rate lookup
+        rates = {
+            "USD_JPY": 145.0,
+            "EUR_JPY": 158.0,
+            "JPY_JPY": 1.0
+        }
+        rate = rates.get(f"{from_currency}_{to_currency}", 1.0)
+        return value * rate
+    
+    def parse_japanese_numbers(self, text: str) -> float:
+        """Parses Japanese numerical notation"""
+        # 万 = 10,000, 億 = 100,000,000, 兆 = 1,000,000,000,000
+        multipliers = {
+            "万": 10_000,
+            "億": 100_000_000,
+            "兆": 1_000_000_000_000
+        }
+        # Would implement actual parsing logic
+        return 0.0
+    
+    def validate_extraction(self, data_points: List[DataPoint]) -> List[DataPoint]:
+        """Validates extracted data for consistency"""
+        validated = []
+        for point in data_points:
+            # Check for reasonable ranges
+            if point.value > 0 and point.value < 1_000_000:  # Reasonable for billions JPY
+                point.validation_status = "validated"
+                validated.append(point)
+            else:
+                point.validation_status = "flagged_for_review"
+                validated.append(point)
+        return validated
+
+class MarketModelerAgent:
+    """
+    Builds quantitative models using multiple methodologies
+    Implements top-down, bottom-up, and triangulation approaches
+    """
+    
+    def __init__(self, llm):
+        self.llm = llm
+        self.methodologies = {
+            MethodologyType.TOP_DOWN_CASCADE: self.top_down_model,
+            MethodologyType.BOTTOM_UP_AGGREGATION: self.bottom_up_model,
+            MethodologyType.PROXY_TRIANGULATION: self.proxy_model
+        }
+        
+        self.prompt = """You are a quantitative modeling specialist for market sizing.
+        
+        Modeling principles:
+        1. Always calculate using multiple methodologies for validation
+        2. Document all assumptions with justification
+        3. Propagate uncertainty through calculations
+        4. Maintain traceability to source data
+        
+        For Japan data center CAPEX:
+        - Use 60-70% CAPEX ratio during growth phase
+        - Apply 1.3-1.5x cost premium vs other Asia markets
+        - Consider seismic requirements adding 15-20% to construction
+        - Factor in 2024 as base year for projections
+        
+        Required outputs:
+        - Point estimates with confidence intervals
+        - Year-over-year growth rates
+        - Segment breakdowns with allocation ratios
+        - Methodology comparison table
+        
+        Input data: {data_points}
+        Target segments: {segments}
+        Forecast period: {forecast_years}
+        
+        {agent_scratchpad}
+        """
+    
+    def top_down_model(self, market_data: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Implements top-down cascade methodology
+        Starts from macro indicators and allocates down
+        """
+        model_output = {}
+        
+        # Start with Japan IT services market
+        it_services_total = market_data.get("it_services_market", 154_000)  # 1.54T JPY
+        
+        # Apply data center infrastructure ratio (15-20%)
+        dc_infrastructure = it_services_total * 0.175  # Using midpoint
+        
+        # Apply CAPEX ratio (60-70% during growth)
+        dc_capex = dc_infrastructure * 0.65
+        
+        # Segment by DC type
+        model_output["colocation"] = dc_capex * 0.475  # 45-50%
+        model_output["hyperscale"] = dc_capex * 0.375  # 35-40%
+        model_output["others"] = dc_capex * 0.15      # 10-15%
+        
+        # Further segment by construction type
+        for dc_type in ["colocation", "hyperscale", "others"]:
+            base = model_output[dc_type]
+            model_output[f"{dc_type}_it"] = base * 0.375         # 35-40%
+            model_output[f"{dc_type}_electrical"] = base * 0.275  # 25-30%
+            model_output[f"{dc_type}_mechanical"] = base * 0.225  # 20-25%
+            model_output[f"{dc_type}_general"] = base * 0.075    # 5-10%
+            model_output[f"{dc_type}_services"] = base * 0.05    # 5%
+        
+        return model_output
+    
+    def bottom_up_model(self, project_data: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Implements bottom-up aggregation methodology
+        Builds from individual projects and components
+        """
+        model_output = {}
+        
+        # Aggregate known projects
+        known_projects = project_data.get("identified_projects", [])
+        total_known_capex = sum(p.get("investment", 0) for p in known_projects)
+        
+        # Apply coverage factor (assuming we captured 70-80% of market)
+        coverage_factor = 0.75
+        estimated_total = total_known_capex / coverage_factor
+        
+        # Use Pareto distribution for smaller projects
+        # 80% of value in large projects, 20% in long tail
+        small_project_adjustment = estimated_total * 0.25
+        
+        model_output["total_market"] = estimated_total + small_project_adjustment
+        
+        # Apply known ratios for segmentation
+        return self.apply_segment_ratios(model_output["total_market"])
+    
+    def proxy_model(self, proxy_data: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Uses proxy indicators for triangulation
+        Power consumption, imports, construction permits
+        """
+        model_output = {}
+        
+        # Power-based estimation
+        new_capacity_mw = proxy_data.get("capacity_additions_mw", 2100)
+        cost_per_mw = 1_660  # Million JPY (average of 1.56-1.76B range)
+        power_based_capex = new_capacity_mw * cost_per_mw
+        
+        # Import-based estimation
+        server_imports = proxy_data.get("server_imports_usd", 3_860)  # Million USD
+        import_to_total_ratio = 0.35  # Servers are ~35% of total CAPEX
+        import_based_capex = (server_imports * 145) / import_to_total_ratio  # Convert to JPY
+        
+        # Permit-based estimation
+        construction_permits = proxy_data.get("dc_construction_permits", 47)
+        avg_investment_per_permit = 7_800  # Million JPY
+        permit_based_capex = construction_permits * avg_investment_per_permit
+        
+        # Weighted average of proxy estimates
+        model_output["total_market"] = (
+            power_based_capex * 0.4 +
+            import_based_capex * 0.35 +
+            permit_based_capex * 0.25
+        )
+        
+        return model_output
+    
+    def apply_segment_ratios(self, total: float) -> Dict[str, float]:
+        """Applies standard segmentation ratios to total market"""
+        segments = {}
+        
+        # DC Type segmentation
+        segments["colocation"] = total * 0.475
+        segments["hyperscale"] = total * 0.375
+        segments["others"] = total * 0.15
+        
+        # Add other dimensions...
+        return segments
+
+class ValidationAgent:
+    """
+    Cross-validates findings across methodologies
+    Implements triangulation and sanity checking
+    """
+    
+    def __init__(self, llm, tolerance_threshold: float = 0.25):
+        self.llm = llm
+        self.tolerance_threshold = tolerance_threshold
+        
+        self.validation_rules = [
+            self.check_methodology_convergence,
+            self.validate_growth_rates,
+            self.check_segment_consistency,
+            self.benchmark_regional_comparisons
+        ]
+        
+        self.prompt = """You are a validation specialist ensuring research integrity.
+        
+        Validation framework:
+        1. Methodology convergence (must be within 25%)
+        2. YoY growth rate reasonableness (5-30% typical)
+        3. Segment ratios consistency across years
+        4. Regional benchmark alignment
+        
+        Red flags to investigate:
+        - Divergence >25% between methodologies
+        - Growth rates exceeding 40% or negative
+        - Segment shares shifting >10% in one year
+        - Values >2x or <0.5x regional averages
+        
+        Inputs to validate: {estimates}
+        Benchmark data: {benchmarks}
+        
+        {agent_scratchpad}
+        """
+    
+    def check_methodology_convergence(self, estimates: Dict[str, Dict]) -> Tuple[bool, str]:
+        """Checks if different methodologies produce similar results"""
+        methodologies = list(estimates.keys())
+        
+        if len(methodologies) < 2:
+            return True, "Single methodology - no convergence check possible"
+        
+        # Compare each pair of methodologies
+        max_divergence = 0.0
+        for i in range(len(methodologies)):
+            for j in range(i+1, len(methodologies)):
+                method1 = methodologies[i]
+                method2 = methodologies[j]
+                
+                value1 = estimates[method1].get("total_market", 0)
+                value2 = estimates[method2].get("total_market", 0)
+                
+                if value1 > 0 and value2 > 0:
+                    divergence = abs(value1 - value2) / min(value1, value2)
+                    max_divergence = max(max_divergence, divergence)
+        
+        if max_divergence > self.tolerance_threshold:
+            return False, f"Methodology divergence {max_divergence:.1%} exceeds threshold"
+        
+        return True, f"Methodologies converged within {max_divergence:.1%}"
+    
+    def validate_growth_rates(self, time_series: Dict[int, float]) -> Tuple[bool, str]:
+        """Validates year-over-year growth rates for reasonableness"""
+        years = sorted(time_series.keys())
+        growth_rates = []
+        
+        for i in range(1, len(years)):
+            prev_year = time_series[years[i-1]]
+            curr_year = time_series[years[i]]
+            
+            if prev_year > 0:
+                growth_rate = (curr_year - prev_year) / prev_year
+                growth_rates.append(growth_rate)
+                
+                # Check for unreasonable growth
+                if growth_rate > 0.4 or growth_rate < -0.1:
+                    return False, f"Unreasonable growth rate {growth_rate:.1%} in {years[i]}"
+        
+        avg_growth = sum(growth_rates) / len(growth_rates) if growth_rates else 0
+        return True, f"Average growth rate {avg_growth:.1%} is reasonable"
+    
+    def check_segment_consistency(self, segments: Dict[str, Dict[int, float]]) -> Tuple[bool, str]:
+        """Ensures segment shares remain relatively stable over time"""
+        issues = []
+        
+        for segment_name, time_series in segments.items():
+            years = sorted(time_series.keys())
+            
+            for i in range(1, len(years)):
+                prev_share = time_series[years[i-1]]
+                curr_share = time_series[years[i]]
+                
+                share_change = abs(curr_share - prev_share)
+                if share_change > 0.1:  # More than 10% change in share
+                    issues.append(f"{segment_name} share changed {share_change:.1%} in {years[i]}")
+        
+        if issues:
+            return False, f"Segment instability: {'; '.join(issues)}"
+        
+        return True, "Segment shares are stable"
+    
+    def benchmark_regional_comparisons(self, japan_value: float, 
+                                      regional_data: Dict[str, float]) -> Tuple[bool, str]:
+        """Compares Japan estimates to regional benchmarks"""
+        # Apply Japan's cost premium (1.3-1.5x)
+        adjusted_regional = {
+            country: value * 1.4 for country, value in regional_data.items()
+        }
+        
+        regional_avg = sum(adjusted_regional.values()) / len(adjusted_regional)
+        
+        deviation = abs(japan_value - regional_avg) / regional_avg
+        
+        if deviation > 0.5:  # More than 50% deviation from regional average
+            return False, f"Japan value deviates {deviation:.1%} from regional average"
+        
+        return True, f"Japan value within {deviation:.1%} of regional benchmarks"
+
+class SynthesisAgent:
+    """
+    Compiles final insights and generates reports
+    Handles stakeholder-specific formatting
+    """
+    
+    def __init__(self, llm, report_templates: Dict[str, str]):
+        self.llm = llm
+        self.report_templates = report_templates
+        
+        self.prompt = """You are a synthesis specialist creating actionable insights.
+        
+        Report requirements:
+        1. Executive summary with key findings
+        2. Methodology transparency and confidence levels
+        3. Detailed segment breakdowns with visualizations
+        4. Risk factors and uncertainty quantification
+        5. Actionable recommendations
+        
+        Stakeholder adaptations:
+        - Executive: Focus on strategic implications and growth opportunities
+        - Technical: Include methodology details and data lineage
+        - Investment: Emphasize ROI and market dynamics
+        
+        Synthesize findings: {validated_estimates}
+        Target audience: {stakeholder_type}
+        Report format: {format_requirements}
+        
+        {agent_scratchpad}
+        """
+    
+    def generate_executive_summary(self, estimates: Dict) -> str:
+        """Creates high-level summary for executives"""
+        summary = f"""
+        Japan Data Center CAPEX Market Assessment (2019-2030)
+        
+        Market Size: ¥{estimates['2024_total']:.1f}B (2024 base year)
+        Projected Growth: {estimates['cagr']:.1%} CAGR through 2030
+        
+        Key Segments:
+        - Colocation: {estimates['colocation_share']:.0%} market share
+        - Hyperscale: {estimates['hyperscale_share']:.0%} market share
+        
+        Investment Drivers:
+        - AI/ML workload growth driving hyperscale expansion
+        - Edge computing deployment for 5G applications
+        - Government Digital Garden City initiative (¥5.7T allocation)
+        
+        Confidence Level: {estimates['confidence']:.0%} (based on triangulated methodologies)
+        """
+        return summary
+    
+    def create_methodology_appendix(self, methods_used: List[Dict]) -> str:
+        """Documents methodology for transparency"""
+        appendix = "Research Methodology\n\n"
+        
+        for method in methods_used:
+            appendix += f"""
+            {method['name']}:
+            - Data Sources: {', '.join(method['sources'])}
+            - Coverage: {method['coverage']:.0%} of market
+            - Confidence: {method['confidence']:.0%}
+            - Key Assumptions: {method['assumptions']}
+            
+            """
+        
+        return appendix
+    
+    def generate_segment_analysis(self, segments: Dict) -> Dict[str, Any]:
+        """Creates detailed segment breakdowns"""
+        analysis = {}
+        
+        for segment_key, data in segments.items():
+            analysis[segment_key] = {
+                "current_size": data['2024_value'],
+                "growth_rate": data['cagr'],
+                "market_share": data['share'],
+                "key_players": data.get('players', []),
+                "growth_drivers": data.get('drivers', []),
+                "challenges": data.get('challenges', [])
+            }
+        
+        return analysis
+
+# ============================================================================
+# PHASE 3: ORCHESTRATION LAYER
+# ============================================================================
+
+class MarketResearchOrchestrator:
+    """
+    Main orchestrator coordinating all agents
+    Implements phase transitions and error handling
+    """
+    
+    def __init__(self, llm, vector_store, config: Dict[str, Any]):
+        self.llm = llm
+        self.vector_store = vector_store
+        self.config = config
+        
+        # Initialize specialized agents
+        self.agents = {
+            "source_hunter": SourceHunterAgent(llm, None, vector_store),
+            "data_extractor": DataExtractorAgent(llm),
+            "market_modeler": MarketModelerAgent(llm),
+            "validator": ValidationAgent(llm),
+            "synthesizer": SynthesisAgent(llm, config.get("templates", {}))
+        }
+        
+        # Phase transition logic
+        self.phase_transitions = {
+            ResearchPhase.DISCOVERY: self.execute_discovery,
+            ResearchPhase.EXTRACTION: self.execute_extraction,
+            ResearchPhase.MODELING: self.execute_modeling,
+            ResearchPhase.SYNTHESIS: self.execute_synthesis
+        }
+        
+        # Shared context store
+        self.context_store = {
+            "sources": [],
+            "data_points": [],
+            "estimates": {},
+            "validation_results": [],
+            "final_report": None
+        }
+    
+    def execute_research(self, market_definition: Dict) -> Dict[str, Any]:
+        """
+        Main execution flow through all research phases
+        """
+        results = {}
+        
+        try:
+            # Phase 1: Discovery
+            print("Phase 1: Source Discovery and Assessment")
+            discovery_results = self.execute_discovery(market_definition)
+            results["discovery"] = discovery_results
+            
+            # Phase 2: Extraction
+            print("Phase 2: Data Extraction and Normalization")
+            extraction_results = self.execute_extraction(discovery_results["sources"])
+            results["extraction"] = extraction_results
+            
+            # Phase 3: Modeling
+            print("Phase 3: Market Modeling and Calculation")
+            modeling_results = self.execute_modeling(extraction_results["data_points"])
+            results["modeling"] = modeling_results
+            
+            # Phase 4: Synthesis
+            print("Phase 4: Synthesis and Report Generation")
+            synthesis_results = self.execute_synthesis(modeling_results["estimates"])
+            results["synthesis"] = synthesis_results
+            
+            # Store final results
+            self.context_store["final_report"] = synthesis_results
+            
+        except Exception as e:
+            print(f"Research execution failed: {str(e)}")
+            results["error"] = str(e)
+            results["partial_results"] = self.context_store
+        
+        return results
+    
+    def execute_discovery(self, market_definition: Dict) -> Dict[str, Any]:
+        """Phase 1: Discover and assess data sources"""
+        agent = self.agents["source_hunter"]
+        
+        # Search government sources
+        gov_sources = agent.search_government_databases(
+            f"Japan data center CAPEX {market_definition['start_year']}-{market_definition['end_year']}"
+        )
+        
+        # Search industry associations
+        industry_sources = agent.search_industry_associations("data_center")
+        
+        # Evaluate all sources
+        all_sources = {**gov_sources, **industry_sources}
+        
+        scored_sources = {}
+        for source_id, source_data in all_sources.items():
+            score = agent.evaluate_source_credibility(source_data)
+            scored_sources[source_id] = {
+                **source_data,
+                "credibility_score": score
+            }
+        
+        # Identify gaps needing proxy indicators
+        required_segments = self._generate_segment_combinations(market_definition)
+        covered_segments = self._assess_segment_coverage(scored_sources, required_segments)
+        gaps = [s for s in required_segments if s not in covered_segments]
+        
+        proxy_indicators = agent.identify_proxy_indicators(gaps)
+        
+        return {
+            "sources": scored_sources,
+            "coverage_assessment": covered_segments,
+            "gaps": gaps,
+            "proxy_indicators": proxy_indicators
+        }
+    
+    def execute_extraction(self, sources: Dict) -> Dict[str, Any]:
+        """Phase 2: Extract data from identified sources"""
+        agent = self.agents["data_extractor"]
+        
+        all_data_points = []
+        
+        for source_id, source_info in sources.items():
+            # Extract tables from source
+            extracted = agent.extract_tables(
+                source_info.get("url"),
+                source_info.get("data_points", [])
+            )
+            
+            # Normalize currency
+            for point in extracted:
+                if point.currency != "JPY":
+                    point.value = agent.normalize_currency(
+                        point.value,
+                        point.currency,
+                        "JPY",
+                        point.extraction_date
+                    )
+                    point.currency = "JPY"
+            
+            # Validate extraction
+            validated = agent.validate_extraction(extracted)
+            all_data_points.extend(validated)
+        
+        return {
+            "data_points": all_data_points,
+            "extraction_summary": {
+                "total_points": len(all_data_points),
+                "validated": len([p for p in all_data_points if p.validation_status == "validated"]),
+                "flagged": len([p for p in all_data_points if p.validation_status == "flagged_for_review"])
+            }
+        }
+    
+    def execute_modeling(self, data_points: List[DataPoint]) -> Dict[str, Any]:
+        """Phase 3: Build market models"""
+        agent = self.agents["market_modeler"]
+        
+        # Prepare data for modeling
+        market_data = self._prepare_modeling_data(data_points)
+        
+        # Run all three methodologies
+        estimates = {}
+        
+        # Top-down model
+        estimates["top_down"] = agent.top_down_model(market_data)
+        
+        # Bottom-up model  
+        estimates["bottom_up"] = agent.bottom_up_model(market_data.get("project_data", {}))
+        
+        # Proxy triangulation
+        estimates["proxy"] = agent.proxy_model(market_data.get("proxy_data", {}))
+        
+        # Calculate weighted average
+        weighted_estimate = self._calculate_weighted_average(estimates)
+        
+        # Generate time series projections
+        projections = self._generate_projections(weighted_estimate, 2019, 2030)
+        
+        return {
+            "estimates": estimates,
+            "weighted_estimate": weighted_estimate,
+            "projections": projections
+        }
+    
+    def execute_synthesis(self, estimates: Dict) -> Dict[str, Any]:
+        """Phase 4: Synthesize and generate report"""
+        validator = self.agents["validator"]
+        synthesizer = self.agents["synthesizer"]
+        
+        # Run validation checks
+        validation_results = []
+        
+        # Check methodology convergence
+        convergence_check = validator.check_methodology_convergence(estimates)
+        validation_results.append({
+            "check": "methodology_convergence",
+            "passed": convergence_check[0],
+            "message": convergence_check[1]
+        })
+        
+        # Validate growth rates
+        if "projections" in estimates:
+            growth_check = validator.validate_growth_rates(estimates["projections"])
+            validation_results.append({
+                "check": "growth_rates",
+                "passed": growth_check[0],
+                "message": growth_check[1]
+            })
+        
+        # Generate report based on validation results
+        if all(v["passed"] for v in validation_results):
+            report = {
+                "executive_summary": synthesizer.generate_executive_summary(estimates),
+                "segment_analysis": synthesizer.generate_segment_analysis(estimates.get("segments", {})),
+                "methodology_appendix": synthesizer.create_methodology_appendix([]),
+                "validation_status": "PASSED",
+                "confidence_level": 0.85
+            }
+        else:
+            report = {
+                "status": "VALIDATION_FAILED",
+                "issues": validation_results,
+                "partial_estimates": estimates,
+                "recommendation": "Manual review required"
+            }
+        
+        return report
+    
+    def _generate_segment_combinations(self, market_def: Dict) -> List[str]:
+        """Generates all required segment combinations"""
+        combinations = []
+        
+        dc_types = market_def.get("dc_types", ["colocation", "hyperscale", "others"])
+        construction_types = market_def.get("construction_types", ["IT", "electrical", "mechanical"])
+        tiers = market_def.get("tiers", ["tier_3", "tier_4"])
+        end_users = market_def.get("end_users", ["BFSI", "IT_telecom", "government"])
+        
+        # Generate all combinations
+        for dc in dc_types:
+            for construction in construction_types:
+                for tier in tiers:
+                    for user in end_users:
+                        combinations.append(f"{dc}_{construction}_{tier}_{user}")
+        
+        return combinations
+    
+    def _assess_segment_coverage(self, sources: Dict, required: List[str]) -> List[str]:
+        """Determines which segments have data coverage"""
+        covered = []
+        
+        # Simplified logic - would implement actual coverage assessment
+        for segment in required:
+            if any("data_center" in str(source) for source in sources.values()):
+                covered.append(segment)
+        
+        return covered
+    
+    def _prepare_modeling_data(self, data_points: List[DataPoint]) -> Dict:
+        """Prepares data for modeling agents"""
+        modeling_data = {
+            "it_services_market": 154_000,  # Billion JPY
+            "project_data": {
+                "identified_projects": []
+            },
+            "proxy_data": {
+                "capacity_additions_mw": 2100,
+                "server_imports_usd": 3860,
+                "dc_construction_permits": 47
+            }
+        }
+        
+        # Aggregate data points by type
+        for point in data_points:
+            # Would implement actual aggregation logic
+            pass
+        
+        return modeling_data
+    
+    def _calculate_weighted_average(self, estimates: Dict) -> Dict:
+        """Calculates weighted average of estimates"""
+        weights = {
+            "top_down": 0.35,
+            "bottom_up": 0.40,
+            "proxy": 0.25
+        }
+        
+        weighted = {}
+        
+        # Calculate weighted total
+        total = sum(
+            estimates[method].get("total_market", 0) * weight
+            for method, weight in weights.items()
+            if method in estimates
+        )
+        
+        weighted["total_market"] = total
+        
+        # Apply segment ratios
+        weighted["segments"] = self.agents["market_modeler"].apply_segment_ratios(total)
+        
+        return weighted
+    
+    def _generate_projections(self, base_estimate: Dict, 
+                            start_year: int, end_year: int) -> Dict[int, float]:
+        """Generates year-by-year projections"""
+        projections = {}
+        
+        # Base year (2024)
+        base_value = base_estimate.get("total_market", 366_000)  # Million JPY
+        projections[2024] = base_value
+        
+        # Historical reconstruction (2019-2023)
+        historical_growth = 0.12  # 12% average historical growth
+        for year in range(2023, 2018, -1):
+            projections[year] = projections[year + 1] / (1 + historical_growth)
+        
+        # Future projections (2025-2030)
+        future_growth = 0.15  # 15% projected growth
+        for year in range(2025, end_year + 1):
+            projections[year] = projections[year - 1] * (1 + future_growth)
+        
+        return projections
+
+# ============================================================================
+# PHASE 4: EXECUTION CONFIGURATION
+# ============================================================================
+
+def create_research_config() -> Dict[str, Any]:
+    """Creates configuration for Japan DC CAPEX research"""
+    return {
+        "market": "japan_datacenter_capex",
+        "geography": "japan",
+        "currency": "JPY",
+        "units": "billions",
+        "time_period": {
+            "start_year": 2019,
+            "end_year": 2030,
+            "base_year": 2024
+        },
+        "segments": {
+            "dc_types": ["colocation", "hyperscale", "others"],
+            "construction_types": ["IT", "electrical", "mechanical", "general", "services"],
+            "tiers": ["tier_1_2", "tier_3_4"],
+            "end_users": ["BFSI", "IT_telecom", "government", "healthcare", "others"]
+        },
+        "data_sources": {
+            "priority_sources": [
+                "METI",
+                "MIC", 
+                "JDCC",
+                "Prefecture permits"
+            ],
+            "language_priority": ["ja", "en"]
+        },
+        "validation": {
+            "methodology_tolerance": 0.25,  # 25% divergence allowed
+            "growth_rate_bounds": [-0.1, 0.4],  # -10% to 40%
+            "segment_stability": 0.1  # 10% max YoY change
+        },
+        "output": {
+            "formats": ["executive_summary", "detailed_analysis", "data_export"],
+            "visualizations": ["market_size_timeline", "segment_breakdown", "growth_drivers"],
+            "confidence_reporting": True
+        }
+    }
+
+# ============================================================================
+# PHASE 5: MAIN EXECUTION FLOW
+# ============================================================================
+
+def execute_japan_dc_research():
+    """
+    Main execution function for Japan DC CAPEX market research
+    This would be called by your MyRA AI system
+    """
+    
+    # Initialize LLM (would use actual LangChain LLM)
+    from langchain.llms import OpenAI  # or your preferred LLM
+    llm = OpenAI(temperature=0.1)  # Low temperature for factual research
+    
+    # Initialize vector store for source management
+    from langchain.vectorstores import FAISS
+    from langchain.embeddings import OpenAIEmbeddings
+    embeddings = OpenAIEmbeddings()
+    vector_store = FAISS.from_texts(["initial"], embeddings)
+    
+    # Load configuration
+    config = create_research_config()
+    
+    # Initialize orchestrator
+    orchestrator = MarketResearchOrchestrator(llm, vector_store, config)
+    
+    # Define market for research
+    market_definition = {
+        "market_name": "Japan Data Center CAPEX",
+        "start_year": 2019,
+        "end_year": 2030,
+        "dc_types": config["segments"]["dc_types"],
+        "construction_types": config["segments"]["construction_types"],
+        "tiers": config["segments"]["tiers"],
+        "end_users": config["segments"]["end_users"]
+    }
+    
+    # Execute research pipeline
+    print("Starting Japan DC CAPEX Market Research Pipeline")
+    print("=" * 60)
+    
+    results = orchestrator.execute_research(market_definition)
+    
+    # Output results
+    if "error" in results:
+        print(f"Research failed: {results['error']}")
+        print("Partial results available:")
+        print(results.get("partial_results", {}))
+    else:
+        print("\nResearch Completed Successfully!")
+        print("-" * 60)
+        
+        if "synthesis" in results:
+            synthesis = results["synthesis"]
+            if "executive_summary" in synthesis:
+                print("\nEXECUTIVE SUMMARY:")
+                print(synthesis["executive_summary"])
+            
+            if "validation_status" in synthesis:
+                print(f"\nValidation Status: {synthesis['validation_status']}")
+                print(f"Confidence Level: {synthesis.get('confidence_level', 0):.0%}")
+        
+        # Export detailed results
+        import json
+        with open("japan_dc_capex_research_results.json", "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        print("\nDetailed results exported to: japan_dc_capex_research_results.json")
+    
+    return results
+
+# ============================================================================
+# PHASE 6: ADVANCED FEATURES
+# ============================================================================
+
+class UncertaintyQuantification:
+    """
+    Implements Monte Carlo simulation for uncertainty propagation
+    """
+    
+    def __init__(self, n_simulations: int = 10000):
+        self.n_simulations = n_simulations
+    
+    def run_monte_carlo(self, base_estimates: Dict, 
+                       uncertainty_params: Dict) -> Dict[str, Any]:
+        """
+        Runs Monte Carlo simulation with parameter variations
+        """
+        import numpy as np
+        
+        results = []
+        
+        for _ in range(self.n_simulations):
+            # Vary each parameter within uncertainty bounds
+            simulation = {}
+            
+            for param, value in base_estimates.items():
+                if param in uncertainty_params:
+                    std_dev = uncertainty_params[param]["std_dev"]
+                    simulated_value = np.random.normal(value, value * std_dev)
+                    simulation[param] = max(0, simulated_value)  # Ensure non-negative
+                else:
+                    simulation[param] = value
+            
+            results.append(simulation)
+        
+        # Calculate percentiles
+        percentiles = {}
+        for param in base_estimates.keys():
+            values = [r[param] for r in results]
+            percentiles[param] = {
+                "p5": np.percentile(values, 5),
+                "p25": np.percentile(values, 25),
+                "p50": np.percentile(values, 50),
+                "p75": np.percentile(values, 75),
+                "p95": np.percentile(values, 95)
+            }
+        
+        return {
+            "percentiles": percentiles,
+            "simulations": results[:100]  # Return sample for visualization
+        }
+
+class AdaptiveMethodologySelector:
+    """
+    Dynamically selects research methodology based on data availability
+    """
+    
+    def __init__(self):
+        self.selection_matrix = {
+            "high_government_data": MethodologyType.TOP_DOWN_CASCADE,
+            "rich_project_data": MethodologyType.BOTTOM_UP_AGGREGATION,
+            "limited_direct_data": MethodologyType.PROXY_TRIANGULATION,
+            "mixed_availability": MethodologyType.HYBRID_WEIGHTED
+        }
+    
+    def assess_data_landscape(self, sources: Dict) -> str:
+        """Evaluates available data to determine landscape type"""
+        gov_sources = sum(1 for s in sources.values() 
+                         if s.get("source_type") == DataSourceType.GOVERNMENT_STATISTICS)
+        project_sources = sum(1 for s in sources.values()
+                            if "project" in str(s).lower())
+        
+        if gov_sources >= 5:
+            return "high_government_data"
+        elif project_sources >= 10:
+            return "rich_project_data"
+        elif len(sources) < 5:
+            return "limited_direct_data"
+        else:
+            return "mixed_availability"
+    
+    def select_methodology(self, sources: Dict) -> MethodologyType:
+        """Selects optimal methodology based on data landscape"""
+        landscape = self.assess_data_landscape(sources)
+        return self.selection_matrix[landscape]
+
+# ============================================================================
+# USAGE EXAMPLE
+# ============================================================================
+
+if __name__ == "__main__":
+    # This would be integrated into your MyRA AI system
+    results = execute_japan_dc_research()
+    
+    # The results can then be used for:
+    # 1. Client reports
+    # 2. Strategic recommendations
+    # 3. Investment analysis
+    # 4. Competitive intelligence
+    
+    print("\nResearch pipeline completed. Results ready for integration into MyRA AI.")
